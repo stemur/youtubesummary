@@ -8,13 +8,6 @@ from rich.console import Console
 from rich.table import Table
 
 def extract_video_id(url: str) -> str:
-    """
-    Extracts the video ID from a YouTube URL.
-    Handles different formats like:
-      - Standard URL: https://www.youtube.com/watch?v=VIDEO_ID
-      - Shortened URL: https://youtu.be/VIDEO_ID
-      - Embed URL: https://www.youtube.com/embed/VIDEO_ID
-    """
     parsed_url = urlparse(url)
     
     # Check for shortened URL (youtu.be)
@@ -133,6 +126,7 @@ def main():
     parser.add_argument("-u", "--url", type=str, help="URL to a YouTube video to extract transcript")
     parser.add_argument("transcript_file", type=str, nargs="?", default="transcript.txt",
                         help="Path to the transcript file (default: transcript.txt)")
+    parser.add_argument("-x", "--extract", type=str, help="Extract transcript from a YouTube video to a file and exit")
 
     args = parser.parse_args()
 
@@ -161,6 +155,13 @@ def main():
         except FileNotFoundError:
             print(f"Transcript file '{args.transcript_file}' not found.")
             exit(1)
+
+    if args.extract:
+        full_transcript = " ".join([entry["text"] for entry in transcript_text])
+        with open(args.extract, "w", encoding="utf-8") as file:
+            file.write(full_transcript)
+        print(f"Transcript extracted from YouTube and saved to '{args.extract}'.")
+        exit(0)
     
     print(f'Summarizing the transcript using Model: {args.model}')
     summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model)
