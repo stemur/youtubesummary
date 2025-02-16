@@ -1,9 +1,10 @@
+import argparse
 import re
+import ollama
+import yt_dlp
+
 from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
-import argparse
-import ollama
-
 from rich.console import Console
 from rich.table import Table
 
@@ -27,6 +28,16 @@ def extract_video_id(url: str) -> str:
     # If no format matched, return None
     return None
 
+def get_video_info(url: str) -> dict:
+    ydl_opts = {
+        'quiet': True,
+        'skip_download': True,
+        "no_warnings": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return info
+
 def get_youtube_transcript(video_id: str):
     try:
         transcript = YouTubeTranscriptApi.get_transcript(video_id)
@@ -39,7 +50,7 @@ def get_youtube_transcript(video_id: str):
 def summarize_transcript_with_metrics(transcript: str, model: str = "llama3.2:latest") -> (str, dict):
     prompt = (
         "Please provide a concise summary of the following transcript:\n\n"
-        f"{transcript}\n\nSummary:"
+        f"{transcript}\n\nSummary: Include some bullet points or key takeaways."
     )
     
     # Generate a response without streaming to obtain performance metrics
@@ -140,6 +151,9 @@ def main():
 
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
+        video_info = get_video_info(args.url)
+        title = video_info.get("title", "YouTube Video - Title Not Found")
+        duration = video_info.get("duration", 0)
         video_id = extract_video_id(args.url)
         if not video_id:
             print("Failed to extract video ID from the URL.")
@@ -167,6 +181,11 @@ def main():
     summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model)
     
     print("Summary:")
+    print(f"Video Title: {title}")
+    # Convert duration to minutes and seconds for friendly output
+    minutes, seconds = divmod(duration, 60)
+    print(f"Video Duration: {minutes}m {seconds}s\n")
+    
     print(summary)
     
     if args.verbose:
