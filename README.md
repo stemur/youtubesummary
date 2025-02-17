@@ -43,4 +43,12 @@ YouTubeSummary is a command-line tool that extracts the transcript from a YouTub
 - **`-s --status`**  
     Check the current status of the Ollama server.
 
-    
+## Configuration File  
+To personalize the tool, you can create a configuration file named `config.json` in the same directory as the script. The file should contain the following fields:  
+```json
+{
+  "default_model": "llama3",
+  "default_prompt": "Please provide a concise summary of the following transcript: {transcript} Summary: Include a bullet point for each item of interest and a key takeaway at the end of the summary."
+}
+```
+For the `default_prompt` field, you can use the `{transcript}` placeholder to include the transcript in the prompt.
