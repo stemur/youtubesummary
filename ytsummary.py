@@ -57,7 +57,6 @@ def get_youtube_transcript(video_id: str):
         print(f"Could not retrieve transcript: {e}")
         return None
 
-
 def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str) -> (str, dict):
     prompt = prompt_template.format(transcript=transcript)    
     # Generate a response without streaming to obtain performance metrics
@@ -107,7 +106,6 @@ def list_models():
             psize = params.get("parameter_size")
             size_str = f"{size:,}" if size else "0"
             table.add_row(name, str(psize), str(size_str))
-            # print(f"- {name} \t (Params: {psize}) \t (Size: {size} bytes)")
         console.print(table)
     except Exception as e:
         print(f"Error listing models: {e}")
@@ -158,13 +156,6 @@ def main():
     if args.status:
         check_status()
         exit(0)
-
-    # # Ensure the transcript file has a .txt extension if no extension is provided.
-    # filename, ext = os.path.splitext(args.extract)
-    # if not filename:
-    #     args.extract = "transcript"
-    # if not ext:
-    #     args.extract = f"{args.extract}.txt"
     
     # Determine transcript file path.
     # If transcript_file does not include a directory, assume it's in the "transcripts" folder.
@@ -205,10 +196,8 @@ def main():
 
     if args.extract:
         full_transcript = " ".join([entry["text"] for entry in transcript_text])
-        # with open(args.extract, "w", encoding="utf-8") as file:
         with open(transcript_path, "w", encoding="utf-8") as file:
             file.write(full_transcript)
-        # print(f"Transcript extracted from YouTube and saved to '{args.extract}'.")
         print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
         exit(0)
     
