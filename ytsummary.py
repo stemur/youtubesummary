@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import ollama
 import yt_dlp
@@ -7,6 +8,15 @@ from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
 from rich.console import Console
 from rich.table import Table
+
+def load_config(filename="config.json") -> dict:
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            config = json.load(file)
+        return config
+    except Exception as e:
+        print(f"Warning: Could not load config file '{filename}': {e}")
+        return {}
 
 def extract_video_id(url: str) -> str:
     parsed_url = urlparse(url)
@@ -47,12 +57,8 @@ def get_youtube_transcript(video_id: str):
         return None
 
 
-def summarize_transcript_with_metrics(transcript: str, model: str = "llama3.2:latest") -> (str, dict):
-    prompt = (
-        "Please provide a concise summary of the following transcript:\n\n"
-        f"{transcript}\n\nSummary: Include some bullet points or key takeaways."
-    )
-    
+def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str) -> (str, dict):
+    prompt = prompt_template.format(transcript=transcript)    
     # Generate a response without streaming to obtain performance metrics
     result = ollama.generate(model=model, prompt=prompt, stream=False)
     
@@ -106,9 +112,7 @@ def list_models():
         print(f"Error listing models: {e}")
 
 def check_status():
-    """
-    Check if Ollama is currently running by printing loaded models.
-    """
+    # Check if Ollama is currently running by printing loaded models.
     try:
         status = ollama.ps()
         models = status.get("models")
@@ -122,6 +126,11 @@ def check_status():
         print(f"Ollama is currently offline.")
 
 def main():
+    # Load the config items from config.json
+    config = load_config("config.json")
+    default_model = config.get("default_model", "llama3.2:latest")
+    default_prompt = config.get("default_prompt", "Please provide a concise summary of the following transcript:\n\n{transcript}\n\nSummary: Include some bullet points or key takeaways.")
+
     parser = argparse.ArgumentParser(
         description="Summarize a transcript using a specified Ollama model. "
                     "Optionally, supply a YouTube URL to automatically extract the transcript."
@@ -133,7 +142,7 @@ def main():
     group.add_argument("-s", "--status", action="store_true", help="Show if Ollama is currently running and exit")
 
     parser.add_argument("-v", "--verbose", action="store_true", help="Output performance metrics along with the summary")
-    parser.add_argument("-m", "--model", type=str, default="llama3.2:latest", help="Name of the model to use (default: llama3.2:latest)")
+    parser.add_argument("-m", "--model", type=str, default=default_model, help="Name of the model to use (default: llama3.2:latest)")
     parser.add_argument("-u", "--url", type=str, help="URL to a YouTube video to extract transcript")
     parser.add_argument("transcript_file", type=str, nargs="?", default="transcript.txt",
                         help="Path to the transcript file (default: transcript.txt)")
@@ -178,7 +187,7 @@ def main():
         exit(0)
     
     print(f'Summarizing the transcript using Model: {args.model}')
-    summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model)
+    summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model, prompt_template=default_prompt)
     
     print("Summary:")
     print(f"Video Title: {title}")
