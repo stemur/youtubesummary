@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import os
 import ollama
 import yt_dlp
 
@@ -158,6 +159,28 @@ def main():
         check_status()
         exit(0)
 
+    # # Ensure the transcript file has a .txt extension if no extension is provided.
+    # filename, ext = os.path.splitext(args.extract)
+    # if not filename:
+    #     args.extract = "transcript"
+    # if not ext:
+    #     args.extract = f"{args.extract}.txt"
+    
+    # Determine transcript file path.
+    # If transcript_file does not include a directory, assume it's in the "transcripts" folder.
+    if args.extract:
+        if os.path.dirname(args.extract) == "":
+            transcript_path = os.path.join("transcripts", args.extract)
+        else:
+            transcript_path = args.extract
+    elif args.transcript_file:
+        transcript_path = os.path.join("transcripts", args.transcript_file)
+    else:
+        transcript_path = "transcripts/transcript.txt"
+
+    # Ensure the transcripts folder exists if needed.
+    os.makedirs("transcripts", exist_ok=True)
+
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
         video_info = get_video_info(args.url)
@@ -173,28 +196,32 @@ def main():
             exit(1)
     else:
         try:
-            with open(args.transcript_file, "r", encoding="utf-8") as file:
+            # with open(args.transcript_file, "r", encoding="utf-8") as file:
+            with open(transcript_path, "r", encoding="utf-8") as file:
                 transcript_text = file.read()
         except FileNotFoundError:
-            print(f"Transcript file '{args.transcript_file}' not found.")
+            print(f"Transcript file '{transcript_path}' not found.")
             exit(1)
 
     if args.extract:
         full_transcript = " ".join([entry["text"] for entry in transcript_text])
-        with open(args.extract, "w", encoding="utf-8") as file:
+        # with open(args.extract, "w", encoding="utf-8") as file:
+        with open(transcript_path, "w", encoding="utf-8") as file:
             file.write(full_transcript)
-        print(f"Transcript extracted from YouTube and saved to '{args.extract}'.")
+        # print(f"Transcript extracted from YouTube and saved to '{args.extract}'.")
+        print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
         exit(0)
     
     print(f'Summarizing the transcript using Model: {args.model}')
     summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model, prompt_template=default_prompt)
     
     print("Summary:")
-    print(f"Video Title: {title}")
-    # Convert duration to minutes and seconds for friendly output
-    minutes, seconds = divmod(duration, 60)
-    print(f"Video Duration: {minutes}m {seconds}s\n")
-    
+    if args.url:
+        print(f"Video Title: {title}")
+        # Convert duration to minutes and seconds for friendly output
+        minutes, seconds = divmod(duration, 60)
+        print(f"Video Duration: {minutes}m {seconds}s\n")
+        
     print(summary)
     
     if args.verbose:
