@@ -26,6 +26,9 @@ YouTubeSummary is a command-line tool that extracts the transcript from a YouTub
   ```bash
   -m "llama2-uncensored"
 
+- **`-t, --temperature`**  
+  Specify the temperature value to be used when the LLM performs the analysis and generates the summary output.
+
 - **`-v, --verbose`**  
   Enable verbose mode to display performance metrics.
 
@@ -48,7 +51,8 @@ To personalize the tool, you can create a configuration file named `config.json`
 ```json
 {
   "default_model": "llama3",
-  "default_prompt": "Please provide a concise summary of the following transcript: {transcript} Summary: Include a bullet point for each item of interest and a key takeaway at the end of the summary."
+  "default_prompt": "Please provide a concise summary of the following transcript: {transcript} Summary: Include a bullet point for each item of interest and a key takeaway at the end of the summary.",
+  "default_temperature": 0.75
 }
 ```
 For the `default_prompt` field, you can use the `{transcript}` placeholder to include the transcript in the prompt.
