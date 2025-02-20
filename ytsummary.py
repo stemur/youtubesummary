@@ -46,8 +46,12 @@ def get_video_info(url: str) -> dict:
         "no_warnings": True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-    return info
+        try:
+            info = ydl.extract_info(url, download=False)
+            return info
+        except yt_dlp.utils.DownloadError as e:
+            print(f"Could not retrieve video info: {e}")
+            return None
 
 def get_youtube_transcript(video_id: str):
     try:
@@ -57,10 +61,10 @@ def get_youtube_transcript(video_id: str):
         print(f"Could not retrieve transcript: {e}")
         return None
 
-def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str) -> (str, dict):
+def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str, temperature: float) -> (str, dict):
     prompt = prompt_template.format(transcript=transcript)    
     # Generate a response without streaming to obtain performance metrics
-    result = ollama.generate(model=model, prompt=prompt, stream=False)
+    result = ollama.generate(model=model, prompt=prompt, options={"temperature": temperature}, stream=False)
     
     # Extract summary text
     summary = result.get("response", "")
@@ -129,6 +133,7 @@ def main():
     config = load_config("config.json")
     default_model = config.get("default_model", "llama3.2:latest")
     default_prompt = config.get("default_prompt", "Please provide a concise summary of the following transcript:\n\n{transcript}\n\nSummary: Include some bullet points or key takeaways.")
+    default_temperature = config.get("default_temperature", 0.25)
 
     parser = argparse.ArgumentParser(
         description="Summarize a transcript using a specified Ollama model. "
@@ -142,6 +147,7 @@ def main():
 
     parser.add_argument("-v", "--verbose", action="store_true", help="Output performance metrics along with the summary")
     parser.add_argument("-m", "--model", type=str, default=default_model, help="Name of the model to use (default: llama3.2:latest)")
+    parser.add_argument("-t", "--temperature", type=float, default=default_temperature, help=f"Temperature for summarization (default: {default_temperature})")
     parser.add_argument("-u", "--url", type=str, help="URL to a YouTube video to extract transcript")
     parser.add_argument("transcript_file", type=str, nargs="?", default="transcript.txt",
                         help="Path to the transcript file (default: transcript.txt)")
@@ -175,6 +181,8 @@ def main():
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
         video_info = get_video_info(args.url)
+        if video_info is None:
+            exit(1)
         title = video_info.get("title", "YouTube Video - Title Not Found")
         duration = video_info.get("duration", 0)
         video_id = extract_video_id(args.url)
@@ -202,7 +210,7 @@ def main():
         exit(0)
     
     print(f'Summarizing the transcript using Model: {args.model}')
-    summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model, prompt_template=default_prompt)
+    summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
     
     print("Summary:")
     if args.url:
