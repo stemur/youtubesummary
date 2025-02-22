@@ -3,12 +3,18 @@ import json
 import re
 import os
 import ollama
-import yt_dlp
+import requests
+import xml.etree.ElementTree as ET
 
 from urllib.parse import urlparse, parse_qs
-from youtube_transcript_api import YouTubeTranscriptApi
 from rich.console import Console
 from rich.table import Table
+from html import unescape
+
+def format_duration(seconds):
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {secs}s"
 
 def load_config(filename="config.json") -> dict:
     try:
@@ -19,43 +25,59 @@ def load_config(filename="config.json") -> dict:
         print(f"Warning: Could not load config file '{filename}': {e}")
         return {}
 
-def extract_video_id(url: str) -> str:
-    parsed_url = urlparse(url)
-    
-    # Check for shortened URL (youtu.be)
-    if 'youtu.be' in parsed_url.netloc:
-        return parsed_url.path.strip('/')
-    
-    # Check for standard URL with query parameter ?v=
-    query_params = parse_qs(parsed_url.query)
-    if 'v' in query_params:
-        return query_params['v'][0]
-    
-    # Check for embed URL format
-    embed_match = re.search(r'/embed/([^?&/]+)', url)
-    if embed_match:
-        return embed_match.group(1)
-    
-    # If no format matched, return None
-    return None
+def get_video_info(html: str) -> dict:
+    pattern = r"ytInitialPlayerResponse\s*=\s*({.*?});"
+    match = re.search(pattern, html)
+    if not match:
+        raise Exception("No video details found in the video page.")
 
-def get_video_info(url: str) -> dict:
-    ydl_opts = {
-        'quiet': True,
-        'skip_download': True,
-        "no_warnings": True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-            return info
-        except yt_dlp.utils.DownloadError as e:
-            print(f"Could not retrieve video info: {e}")
-            return None
-
-def get_youtube_transcript(video_id: str):
+    video_details_json = match.group(1)
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        video_details = json.loads(video_details_json)
+    except json.JSONDecodeError:
+        raise Exception("Failed to parse video details JSON.")
+        exit(0)
+
+    details = video_details.get("videoDetails", {})
+    title = details.get("title", "YouTube Video - Title Not Found")
+    duration = details.get("lengthSeconds", 0)
+
+    print(f"Title: {title}, Duration: {format_duration(int(duration))}")
+
+def get_youtube_transcript(html: str, lang: str = "en") -> list:
+    try:
+        pattern = r'"captionTracks":(\[.*?\])'
+        match = re.search(pattern, html)
+        if not match:
+            print("No caption tracks found in the video page.")
+            return None
+        caption_tracks_json = match.group(1)
+        caption_tracks = json.loads(caption_tracks_json)
+        
+        # Parse the JSON to extract the transcript url
+        track_url = None
+        for track in caption_tracks:
+            if track.get("languageCode") == lang:
+                track_url = track.get("baseUrl")
+                break
+        if not track_url:
+            raise Exception(f"No transcript available in language '{lang}'.")
+
+        transcript_response = requests.get(track_url)
+        if transcript_response.status_code != 200:
+            raise Exception("Could not fetch transcript from the caption track URL.")
+            return None
+        xml_data = transcript_response.text
+
+        # Parse the XML to extract transcript text, start, and duration
+        root = ET.fromstring(xml_data)
+        transcript = []
+        for child in root.findall('text'):
+            text = child.text or ""
+            start = child.attrib.get("start")
+            dur = child.attrib.get("dur")
+            transcript.append({"text": unescape(text).strip(), "start": start, "duration": dur})
+
         return transcript
     except Exception as e:
         print(f"Could not retrieve transcript: {e}")
@@ -134,7 +156,12 @@ def main():
     default_model = config.get("default_model", "llama3.2:latest")
     default_prompt = config.get("default_prompt", "Please provide a concise summary of the following transcript:\n\n{transcript}\n\nSummary: Include some bullet points or key takeaways.")
     default_temperature = config.get("default_temperature", 0.25)
+    default_language = config.get("default_language", "en")
 
+    # Ensure the transcripts folder exists if needed.
+    os.makedirs("transcripts", exist_ok=True)
+
+    # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Summarize a transcript using a specified Ollama model. "
                     "Optionally, supply a YouTube URL to automatically extract the transcript."
@@ -175,50 +202,39 @@ def main():
     else:
         transcript_path = "transcripts/transcript.txt"
 
-    # Ensure the transcripts folder exists if needed.
-    os.makedirs("transcripts", exist_ok=True)
-
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
-        video_info = get_video_info(args.url)
-        if video_info is None:
+        response = requests.get(args.url)
+        if response.status_code != 200:
+            print(f"Failed to fetch YouTube video page: {html.status_code}")
             exit(1)
-        title = video_info.get("title", "YouTube Video - Title Not Found")
-        duration = video_info.get("duration", 0)
-        video_id = extract_video_id(args.url)
-        if not video_id:
-            print("Failed to extract video ID from the URL.")
-            exit(1)
-        transcript_text = get_youtube_transcript(video_id)
-        if not transcript_text:
+
+        html = response.text
+        video_info = get_video_info(html)
+
+        transcript_text = get_youtube_transcript(html, default_language)
+        full_transcript = " ".join([entry["text"] for entry in transcript_text])
+        if not full_transcript:
             print("Failed to retrieve transcript from YouTube.")
             exit(1)
     else:
         try:
-            # with open(args.transcript_file, "r", encoding="utf-8") as file:
             with open(transcript_path, "r", encoding="utf-8") as file:
-                transcript_text = file.read()
+                full_transcript = file.read()
         except FileNotFoundError:
             print(f"Transcript file '{transcript_path}' not found.")
             exit(1)
 
     if args.extract:
-        full_transcript = " ".join([entry["text"] for entry in transcript_text])
         with open(transcript_path, "w", encoding="utf-8") as file:
             file.write(full_transcript)
         print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
-        exit(0)
+        # exit(0)
     
     print(f'Summarizing the transcript using Model: {args.model}')
-    summary, metrics = summarize_transcript_with_metrics(transcript_text, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
+    summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
     
-    print("Summary:")
-    if args.url:
-        print(f"Video Title: {title}")
-        # Convert duration to minutes and seconds for friendly output
-        minutes, seconds = divmod(duration, 60)
-        print(f"Video Duration: {minutes}m {seconds}s\n")
-        
+    print("\n")
     print(summary)
     
     if args.verbose:
