@@ -40,9 +40,10 @@ def get_video_info(html: str) -> dict:
 
     details = video_details.get("videoDetails", {})
     title = details.get("title", "YouTube Video - Title Not Found")
+    channel = details.get("author", "Unknown Channel")
     duration = details.get("lengthSeconds", 0)
 
-    print(f"Title: {title}, Duration: {format_duration(int(duration))}")
+    print(f"Channel: {channel} \nTitle: {title}, \nDuration: {format_duration(int(duration))}\n")
 
 def get_youtube_transcript(html: str, lang: str = "en") -> list:
     try:
