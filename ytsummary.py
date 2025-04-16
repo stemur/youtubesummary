@@ -122,18 +122,25 @@ def list_models():
     try:
         models = ollama.list()
         console = Console()
-        table = Table(title = "Available Ollama Models")
+        table = Table(title="Available Ollama Models")
         table.add_column("Model Name", no_wrap=True)
         table.add_column("Parameters", no_wrap=True)
         table.add_column("Size (bytes)", no_wrap=True)
+        
         for model in models.get("models", []):
-            name = model.get("model")
-            size = model.get("size")
-            params = model.get("details", [])
-            psize = params.get("parameter_size")
+            name = model.get("model", "N/A")
+            size = model.get("size", 0)
+            params = model.get("details", {})
+            psize = params.get("parameter_size", "N/A")
             size_str = f"{size:,}" if size else "0"
-            table.add_row(name, str(psize), str(size_str))
-        console.print(table)
+            table.add_row(name, str(psize), size_str)
+        
+        if not models.get("models"):
+            console.print("[yellow]No models available.[/yellow]")
+        else:
+            console.print(table)
+    except KeyError as e:
+        print(f"Error parsing model details: Missing key {e}")
     except Exception as e:
         print(f"Error listing models: {e}")
 
