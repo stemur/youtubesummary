@@ -118,7 +118,7 @@ def summarize_transcript_with_metrics(transcript: str, model: str, prompt_templa
     
     return summary, metrics
 
-def list_models():
+def list_models(default_model: str):
     try:
         models = ollama.list()
         console = Console()
@@ -126,6 +126,7 @@ def list_models():
         table.add_column("Model Name", no_wrap=True)
         table.add_column("Parameters", no_wrap=True)
         table.add_column("Size (bytes)", no_wrap=True)
+        table.add_column("Default Model", no_wrap=True)
         
         for model in models.get("models", []):
             name = model.get("model", "N/A")
@@ -133,7 +134,9 @@ def list_models():
             params = model.get("details", {})
             psize = params.get("parameter_size", "N/A")
             size_str = f"{size:,}" if size else "0"
-            table.add_row(name, str(psize), size_str)
+            is_default = "[green]Default[/green]" if name == default_model else ""
+            table.add_row(name, str(psize), size_str, is_default)
+            # table.add_row(name, str(psize), size_str)
         
         if not models.get("models"):
             console.print("[yellow]No models available.[/yellow]")
@@ -192,7 +195,7 @@ def main():
 
     # If standalone options are used, process and exit.
     if args.list:
-        list_models()
+        list_models(default_model)
         exit(0)
     if args.status:
         check_status()
