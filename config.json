@@ -1,5 +1,5 @@
 {
-    "default_model": "llama3",
+    "default_model": "gemma3:27b",
     "default_prompt": "Please provide a concise summary of the following video transcript: {transcript}\n\n Summary: Include a summary section as well as a section for bullet points for any items of interest and any key takeaways at the end of the summary.",
     "default_temperature": 0.75,
     "default_langiage": "en"
