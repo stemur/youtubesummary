@@ -12,9 +12,22 @@ from rich.table import Table
 from html import unescape
 
 def format_duration(seconds):
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours}h {minutes}m {secs}s"
+    try:
+        seconds = int(seconds)
+        if seconds < 0:
+            raise ValueError("Duration cannot be negative.")
+        
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        
+        if hours > 0:
+            return f"{hours}h {minutes}m {secs}s"
+        elif minutes > 0:
+            return f"{minutes}m {secs}s"
+        else:
+            return f"{secs}s"
+    except (ValueError, TypeError):
+        return "Invalid duration"
 
 def load_config(filename="config.json") -> dict:
     try:
@@ -249,7 +262,7 @@ def main():
     print(summary)
     
     if args.verbose:
-        print("\nPerformance Metrics:")
+        print("Performance Metrics:")
         for key, value in metrics.items():
             print(f"{key}: {value}")
 
