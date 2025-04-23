@@ -56,7 +56,7 @@ def get_video_info(html: str) -> dict:
     channel = details.get("author", "Unknown Channel")
     duration = details.get("lengthSeconds", 0)
 
-    print(f"Channel: {channel} \nTitle: {title}, \nDuration: {format_duration(int(duration))}\n")
+    print(f"Channel: {channel} \nTitle: {title} \nDuration: {format_duration(int(duration))}\n")
 
 def get_youtube_transcript(html: str, lang: str = "en") -> list:
     try:
@@ -262,7 +262,7 @@ def main():
     print(summary)
     
     if args.verbose:
-        print("Performance Metrics:")
+        print("\nPerformance Metrics:")
         for key, value in metrics.items():
             print(f"{key}: {value}")
 
