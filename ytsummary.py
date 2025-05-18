@@ -229,6 +229,13 @@ def main():
 
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
+        # Pre-validate YouTube URL
+        parsed_url = urlparse(args.url)
+        hostname = parsed_url.hostname.lower() if parsed_url.hostname else ""
+        valid_hosts = ("www.youtube.com", "youtube.com", "youtu.be", "m.youtube.com")
+        if hostname not in valid_hosts:
+            print(f"Invalid YouTube URL: {args.url}\nPlease provide a valid YouTube link.")
+            exit(1)
         with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
             task = progress.add_task("Downloading video page...", total=None)
             response = requests.get(args.url)
