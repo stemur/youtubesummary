@@ -1,11 +1,15 @@
 # YouTubeSummary
 
+A hobby CLI tool to fetch YouTube transcripts and summarize them with Ollama & LLMs.
+
+**⚠️ Disclaimer:** This is a personal side project. No guarantees, no support—use at your own risk!
+
 YouTubeSummary is a command-line tool that extracts the transcript from a YouTube video (or uses a local transcript file), summarizes it using an Ollama model, and (optionally) displays performance metrics such as tokens per second. It also provides options to list available Ollama models and to check whether Ollama is currently running.
 
 ## Features
 
 - **Transcript Extraction:**  
-  Retrieve the transcript from a given YouTube URL using the [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api). If no URL is provided, a local transcript file is used.
+  Retrieve the transcript by directly fetching and parsing YouTube’s caption XML via HTTP requests. If no URL is provided, a local transcript file is used.
 
 - **Summarization:**  
   Summarize the transcript using an Ollama model (default: `gemma3:27b`). The tool builds a prompt asking the model for a concise summary.
@@ -64,3 +68,8 @@ To personalize the tool, you can create a configuration file named `config.json`
 }
 ```
 For the `default_prompt` field, you can use the `{transcript}` placeholder to include the transcript in the prompt.
+
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
