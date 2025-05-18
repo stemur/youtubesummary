@@ -4,6 +4,7 @@ import re
 import os
 import ollama
 import requests
+import requests.exceptions
 import xml.etree.ElementTree as ET
 
 from urllib.parse import urlparse, parse_qs
@@ -35,8 +36,11 @@ def load_config(filename="config.json") -> dict:
         with open(filename, "r", encoding="utf-8") as file:
             config = json.load(file)
         return config
-    except Exception as e:
-        print(f"Warning: Could not load config file '{filename}': {e}")
+    except FileNotFoundError:
+        print(f"Config file '{filename}' not found; using defaults.")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"Error parsing '{filename}': {e}. Using defaults.")
         return {}
 
 def get_video_info(html: str) -> dict:
@@ -78,14 +82,27 @@ def get_youtube_transcript(html: str, lang: str = "en") -> list:
         if not track_url:
             raise Exception(f"No transcript available in language '{lang}'.")
 
-        transcript_response = requests.get(track_url)
+        try:
+            transcript_response = requests.get(track_url, timeout=10)
+        except requests.exceptions.Timeout:
+            print("Transcript request timed out.")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Network error during transcript fetch: {e}")
+            return None
+
         if transcript_response.status_code != 200:
             raise Exception("Could not fetch transcript from the caption track URL.")
             return None
         xml_data = transcript_response.text
 
         # Parse the XML to extract transcript text, start, and duration
-        root = ET.fromstring(xml_data)
+        try:
+            root = ET.fromstring(xml_data)
+        except ET.ParseError as e:
+            print(f"Transcript XML parse error: {e}")
+            return None
+
         transcript = []
         for child in root.findall('text'):
             text = child.text or ""
@@ -101,7 +118,10 @@ def get_youtube_transcript(html: str, lang: str = "en") -> list:
 def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str, temperature: float) -> tuple[str, dict]:
     prompt = prompt_template.format(transcript=transcript)    
     # Generate a response without streaming to obtain performance metrics
-    result = ollama.generate(model=model, prompt=prompt, options={"temperature": temperature}, stream=False)
+    try:
+        result = ollama.generate(model=model, prompt=prompt, options={"temperature": temperature}, stream=False)
+    except Exception as e:
+        raise RuntimeError(f"Ollama summarization error: {e}")
     
     # Extract summary text
     summary = result.get("response", "")
@@ -183,6 +203,12 @@ def main():
     default_temperature = config.get("default_temperature", 0.25)
     default_language = config.get("default_language", "en")
 
+    # Validate default_temperature from config
+    console = Console()
+    if not isinstance(default_temperature, (int, float)) or not (0.0 <= default_temperature <= 1.0):
+        console.print(f"[yellow]Invalid default_temperature '{default_temperature}' in config; using fallback 0.25[/yellow]")
+        default_temperature = 0.25
+
     # Ensure the transcripts folder exists if needed.
     os.makedirs("transcripts", exist_ok=True)
 
@@ -206,6 +232,13 @@ def main():
     parser.add_argument("-x", "--extract", type=str, help="Extract transcript from a YouTube video to a file and exit")
 
     args = parser.parse_args()
+
+    # Validate mutually exclusive options
+    if args.url and args.extract:
+        parser.error("Cannot use --url and --extract together.")
+    # Validate temperature bounds
+    if not (0.0 <= args.temperature <= 1.0):
+        parser.error("Temperature must be between 0.0 and 1.0.")
 
     # If standalone options are used, process and exit.
     if args.list:
@@ -236,15 +269,37 @@ def main():
         if hostname not in valid_hosts:
             print(f"Invalid YouTube URL: {args.url}\nPlease provide a valid YouTube link.")
             exit(1)
+        # Validate YouTube video ID
+        if hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+            params = parse_qs(parsed_url.query)
+            video_id = params.get("v", [None])[0]
+        else:  # youtu.be
+            video_id = parsed_url.path.lstrip("/")
+        if not video_id or not re.match(r"^[A-Za-z0-9_-]{11}$", video_id):
+            print(
+                f"Invalid YouTube video ID in URL: {args.url}\n"
+                "Please ensure it matches the format 'https://www.youtube.com/watch?v=VIDEO_ID'."
+            )
+            exit(1)
         with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
             task = progress.add_task("Downloading video page...", total=None)
-            response = requests.get(args.url)
+            try:
+                response = requests.get(args.url, timeout=10)
+            except requests.exceptions.RequestException as e:
+                console = Console()
+                console.print(f"[red]Network error fetching video page:[/red] {e}")
+                exit(1)
             if response.status_code != 200:
                 print(f"Failed to fetch YouTube video page: {response.status_code}")
                 exit(1)
             html = response.text
             progress.update(task, description="Extracting transcript...", refresh=True)
-            video_info = get_video_info(html)
+            try:
+                video_info = get_video_info(html)
+            except Exception as e:
+                console = Console()
+                console.print(f"[red]Error extracting video metadata:[/red] {e}")
+                exit(1)
             transcript_text = get_youtube_transcript(html, default_language)
             if not transcript_text:
                 print("Failed to retrieve transcript from YouTube.")
@@ -255,19 +310,30 @@ def main():
         try:
             with open(transcript_path, "r", encoding="utf-8") as file:
                 full_transcript = file.read()
-        except FileNotFoundError:
-            print(f"Transcript file '{transcript_path}' not found.")
+        except IOError as e:
+            print(f"File error: {e}")
             exit(1)
 
     if args.extract:
-        with open(transcript_path, "w", encoding="utf-8") as file:
-            file.write(full_transcript)
+        try:
+            with open(transcript_path, "w", encoding="utf-8") as file:
+                file.write(full_transcript)
+        except IOError as e:
+            print(f"File error: {e}")
+            exit(1)
         print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
         # exit(0)
     
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
         task = progress.add_task(f"Summarizing with model {args.model}...", total=None)
-        summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
+        try:
+            summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
+        except Exception as e:
+            console = Console()
+            console.print(f"[red]Summarization failed:[/red] {e}")
+            exit(1)
+        if not summary.strip():
+            console.print("[yellow]Warning: Model returned an empty summary.[/yellow]")
         progress.update(task, description="Summarization complete.", refresh=True)
 
     print("\n")
@@ -280,4 +346,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
