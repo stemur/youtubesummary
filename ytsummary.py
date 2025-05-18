@@ -224,6 +224,8 @@ def main():
     group.add_argument("-s", "--status", action="store_true", help="Show if Ollama is currently running and exit")
 
     parser.add_argument("-v", "--verbose", action="store_true", help="Output performance metrics along with the summary")
+    parser.add_argument("-M", "--markdown", action="store_true",
+                        help="Save summary and transcript as Markdown with embedded timestamps")
     parser.add_argument("-m", "--model", type=str, default=default_model, help="Name of the model to use (default: llama3.2:latest)")
     parser.add_argument("-t", "--temperature", type=float, default=default_temperature, help=f"Temperature for summarization (default: {default_temperature})")
     parser.add_argument("-u", "--url", type=str, help="URL to a YouTube video to extract transcript")
@@ -343,6 +345,34 @@ def main():
         print("\nPerformance Metrics:")
         for key, value in metrics.items():
             print(f"{key}: {value}")
+
+    # Markdown output
+    if args.markdown:
+        # Determine output path
+        if args.url:
+            md_filename = f"{video_id}.md"
+        else:
+            md_filename = "summary.md"
+        md_path = os.path.join("transcripts", md_filename)
+        try:
+            with open(md_path, "w", encoding="utf-8") as md_file:
+                # Write summary
+                md_file.write("# Summary\n\n")
+                md_file.write(summary + "\n\n")
+                # Write transcript if available
+                if 'transcript_text' in locals() and transcript_text:
+                    md_file.write("## Transcript\n\n")
+                    for entry in transcript_text:
+                        # Format timestamp to HH:MM:SS
+                        ts = format_duration(float(entry.get("start", 0)))
+                        text = entry.get("text", "")
+                        # Embed timestamp as clickable YouTube link
+                        start_seconds = int(float(entry.get("start", 0)))
+                        link_url = f"https://www.youtube.com/watch?v={video_id}&t={start_seconds}s"
+                        md_file.write(f"- [`{ts}`]({link_url}) {text}\n")
+            print(f"Markdown output saved to '{md_path}'.")
+        except IOError as e:
+            print(f"Error writing Markdown file: {e}")
 
 if __name__ == "__main__":
     main()
