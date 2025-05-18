@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, parse_qs
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from html import unescape
 
 def format_duration(seconds):
@@ -97,7 +98,7 @@ def get_youtube_transcript(html: str, lang: str = "en") -> list:
         print(f"Could not retrieve transcript: {e}")
         return None
 
-def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str, temperature: float) -> (str, dict):
+def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str, temperature: float) -> tuple[str, dict]:
     prompt = prompt_template.format(transcript=transcript)    
     # Generate a response without streaming to obtain performance metrics
     result = ollama.generate(model=model, prompt=prompt, options={"temperature": temperature}, stream=False)
@@ -228,19 +229,21 @@ def main():
 
     # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
     if args.url:
-        response = requests.get(args.url)
-        if response.status_code != 200:
-            print(f"Failed to fetch YouTube video page: {html.status_code}")
-            exit(1)
-
-        html = response.text
-        video_info = get_video_info(html)
-
-        transcript_text = get_youtube_transcript(html, default_language)
-        full_transcript = " ".join([entry["text"] for entry in transcript_text])
-        if not full_transcript:
-            print("Failed to retrieve transcript from YouTube.")
-            exit(1)
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
+            task = progress.add_task("Downloading video page...", total=None)
+            response = requests.get(args.url)
+            if response.status_code != 200:
+                print(f"Failed to fetch YouTube video page: {response.status_code}")
+                exit(1)
+            html = response.text
+            progress.update(task, description="Extracting transcript...", refresh=True)
+            video_info = get_video_info(html)
+            transcript_text = get_youtube_transcript(html, default_language)
+            if not transcript_text:
+                print("Failed to retrieve transcript from YouTube.")
+                exit(1)
+            full_transcript = " ".join([entry["text"] for entry in transcript_text])
+            progress.update(task, description="Transcript extraction complete.", refresh=True)
     else:
         try:
             with open(transcript_path, "r", encoding="utf-8") as file:
@@ -255,9 +258,11 @@ def main():
         print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
         # exit(0)
     
-    print(f'Summarizing the transcript using Model: {args.model}')
-    summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
-    
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
+        task = progress.add_task(f"Summarizing with model {args.model}...", total=None)
+        summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
+        progress.update(task, description="Summarization complete.", refresh=True)
+
     print("\n")
     print(summary)
     
