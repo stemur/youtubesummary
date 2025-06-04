@@ -6,6 +6,7 @@ import ollama
 import requests
 import requests.exceptions
 import xml.etree.ElementTree as ET
+import time
 
 from urllib.parse import urlparse, parse_qs
 from rich.console import Console
@@ -44,32 +45,73 @@ def load_config(filename="config.json") -> dict:
         return {}
 
 def get_video_info(html: str) -> dict:
-    pattern = r"ytInitialPlayerResponse\s*=\s*({.*?});"
-    match = re.search(pattern, html)
-    if not match:
-        raise Exception("No video details found in the video page.")
-
-    video_details_json = match.group(1)
     try:
-        video_details = json.loads(video_details_json)
-    except json.JSONDecodeError:
-        raise Exception("Failed to parse video details JSON.")
-        exit(0)
+        # First pattern: standard format
+        pattern = r"ytInitialPlayerResponse\s*=\s*({.*?});"
+        match = re.search(pattern, html)
+        
+        if not match:
+            # Alternative pattern: sometimes it's in a different format
+            pattern = r'{"playerConfig":.*?"videoDetails":({.*?}),"videoQuality"'
+            match = re.search(pattern, html)
+            
+        if not match:
+            raise Exception("No video details found in the video page.")
 
-    details = video_details.get("videoDetails", {})
-    title = details.get("title", "YouTube Video - Title Not Found")
-    channel = details.get("author", "Unknown Channel")
-    duration = details.get("lengthSeconds", 0)
+        video_details_json = match.group(1)
+        
+        try:
+            video_details = json.loads(video_details_json)
+            
+            # If we got the full player response, navigate to videoDetails
+            if "videoDetails" in video_details:
+                details = video_details.get("videoDetails", {})
+            else:
+                # We already have videoDetails directly
+                details = video_details
+                
+            title = details.get("title", "YouTube Video - Title Not Found")
+            channel = details.get("author", "Unknown Channel")
+            duration = details.get("lengthSeconds", 0)
 
-    print(f"Channel: {channel} \nTitle: {title} \nDuration: {format_duration(int(duration))}\n")
+            print(f"Channel: {channel} \nTitle: {title} \nDuration: {format_duration(int(duration))}\n")
+            return details
+            
+        except json.JSONDecodeError as e:
+            # Try to clean up the JSON string if it's malformed
+            video_details_json = video_details_json.replace('\n', '').replace('\r', '')
+            try:
+                video_details = json.loads(video_details_json)
+                details = video_details.get("videoDetails", {})
+                
+                title = details.get("title", "YouTube Video - Title Not Found")
+                channel = details.get("author", "Unknown Channel")
+                duration = details.get("lengthSeconds", 0)
 
-def get_youtube_transcript(html: str, lang: str = "en") -> list:
+                print(f"Channel: {channel} \nTitle: {title} \nDuration: {format_duration(int(duration))}\n")
+                return details
+                
+            except json.JSONDecodeError:
+                raise Exception(f"Failed to parse video details JSON: {e}")
+
+    except Exception as e:
+        print(f"Error in get_video_info: {str(e)}")
+        print("Attempting to continue anyway...")
+        # Return a minimal dict to allow the process to continue
+        return {
+            "title": "Unknown Title",
+            "author": "Unknown Channel",
+            "lengthSeconds": "0"
+        }
+
+def get_youtube_transcript(html: str, lang: str = "en", max_retries: int = 3, delay: float = 1.0) -> list:
     try:
         pattern = r'"captionTracks":(\[.*?\])'
         match = re.search(pattern, html)
         if not match:
             print("No caption tracks found in the video page.")
             return None
+            
         caption_tracks_json = match.group(1)
         caption_tracks = json.loads(caption_tracks_json)
         
@@ -82,37 +124,114 @@ def get_youtube_transcript(html: str, lang: str = "en") -> list:
         if not track_url:
             raise Exception(f"No transcript available in language '{lang}'.")
 
-        try:
-            transcript_response = requests.get(track_url, timeout=10)
-        except requests.exceptions.Timeout:
-            print("Transcript request timed out.")
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"Network error during transcript fetch: {e}")
-            return None
+        # Add headers and retry mechanism for transcript fetch
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
 
-        if transcript_response.status_code != 200:
-            raise Exception("Could not fetch transcript from the caption track URL.")
-            return None
-        xml_data = transcript_response.text
+        # Retry loop for transcript fetch
+        for attempt in range(max_retries):
+            try:
+                transcript_response = requests.get(
+                    track_url, 
+                    headers=headers, 
+                    timeout=15
+                )
+                
+                if transcript_response.status_code == 200:
+                    xml_data = transcript_response.text
+                    
+                    # Validate XML content
+                    if not xml_data or '<transcript>' not in xml_data:
+                        if attempt < max_retries - 1:
+                            time.sleep(delay * (attempt + 1))
+                            continue
+                        raise Exception("Invalid transcript XML received")
+                    
+                    # Parse the XML
+                    root = ET.fromstring(xml_data)
+                    transcript = []
+                    
+                    for child in root.findall('text'):
+                        text = child.text or ""
+                        start = child.attrib.get("start")
+                        dur = child.attrib.get("dur")
+                        if text.strip():  # Only add non-empty entries
+                            transcript.append({
+                                "text": unescape(text).strip(),
+                                "start": start,
+                                "duration": dur
+                            })
+                    
+                    if not transcript:
+                        if attempt < max_retries - 1:
+                            time.sleep(delay * (attempt + 1))
+                            continue
+                        raise Exception("Empty transcript received")
+                    
+                    print(f"Successfully retrieved transcript with {len(transcript)} entries")
+                    return transcript
+                    
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(delay * (attempt + 1))
+                        continue
+                    raise Exception(f"Failed to fetch transcript: HTTP {transcript_response.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise Exception("Transcript request timed out after all retries")
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise Exception(f"Network error during transcript fetch: {e}")
+                
+            except ET.ParseError as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise Exception(f"Transcript XML parse error: {e}")
 
-        # Parse the XML to extract transcript text, start, and duration
-        try:
-            root = ET.fromstring(xml_data)
-        except ET.ParseError as e:
-            print(f"Transcript XML parse error: {e}")
-            return None
+        return None
 
-        transcript = []
-        for child in root.findall('text'):
-            text = child.text or ""
-            start = child.attrib.get("start")
-            dur = child.attrib.get("dur")
-            transcript.append({"text": unescape(text).strip(), "start": start, "duration": dur})
-
-        return transcript
     except Exception as e:
         print(f"Could not retrieve transcript: {e}")
+        return None
+
+def get_youtube_chapters(html: str) -> list:
+    try:
+        # Look for chapter data in the video page HTML
+        pattern = r'"chapterRenderer":({.*?})(?=,(?:"chapterRenderer"|[}\]]))'
+        matches = re.finditer(pattern, html)
+        
+        chapters = []
+        for match in matches:
+            chapter_data = json.loads(match.group(1))
+            
+            # Extract time and title
+            time_str = chapter_data.get("timeRangeStartMillis", 0)
+            title = chapter_data.get("title", {}).get("simpleText", "")
+            
+            if time_str and title:
+                # Convert milliseconds to seconds
+                time_seconds = int(time_str) / 1000
+                chapters.append({
+                    "time": time_seconds,
+                    "title": title,
+                    "timestamp": format_duration(time_seconds)
+                })
+        
+        # Sort chapters by time
+        chapters.sort(key=lambda x: x["time"])
+        print(f'Chapters available: {len(chapters)}')
+        return chapters if chapters else None
+        
+    except Exception as e:
+        print(f"Error extracting chapters: {e}")
         return None
 
 def summarize_transcript_with_metrics(transcript: str, model: str, prompt_template: str, temperature: float) -> tuple[str, dict]:
@@ -195,24 +314,7 @@ def check_status():
     except Exception as e:
         print(f"Ollama is currently offline.")
 
-def main():
-    # Load the config items from config.json
-    config = load_config("config.json")
-    default_model = config.get("default_model", "llama3.2:latest")
-    default_prompt = config.get("default_prompt", "Please provide a concise summary of the following transcript:\n\n{transcript}\n\nSummary: Include some bullet points or key takeaways.")
-    default_temperature = config.get("default_temperature", 0.25)
-    default_language = config.get("default_language", "en")
-
-    # Validate default_temperature from config
-    console = Console()
-    if not isinstance(default_temperature, (int, float)) or not (0.0 <= default_temperature <= 1.0):
-        console.print(f"[yellow]Invalid default_temperature '{default_temperature}' in config; using fallback 0.25[/yellow]")
-        default_temperature = 0.25
-
-    # Ensure the transcripts folder exists if needed.
-    os.makedirs("transcripts", exist_ok=True)
-
-    # Parse command-line arguments
+def setup_argument_parser(default_model: str, default_temperature: float) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Summarize a transcript using a specified Ollama model. "
                     "Optionally, supply a YouTube URL to automatically extract the transcript."
@@ -226,118 +328,239 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Output performance metrics along with the summary")
     parser.add_argument("-M", "--markdown", action="store_true",
                         help="Save summary and transcript as Markdown with embedded timestamps")
-    parser.add_argument("-m", "--model", type=str, default=default_model, help="Name of the model to use (default: llama3.2:latest)")
-    parser.add_argument("-t", "--temperature", type=float, default=default_temperature, help=f"Temperature for summarization (default: {default_temperature})")
+    parser.add_argument("-m", "--model", type=str, default=default_model, help=f"Name of the model to use (default: {default_model})")
+    parser.add_argument("-t", "--temperature", type=float, default=default_temperature, 
+                        help=f"Temperature for summarization (default: {default_temperature})")
     parser.add_argument("-u", "--url", type=str, help="URL to a YouTube video to extract transcript")
     parser.add_argument("transcript_file", type=str, nargs="?", default="transcript.txt",
                         help="Path to the transcript file (default: transcript.txt)")
     parser.add_argument("-x", "--extract", type=str, help="Extract transcript from a YouTube video to a file and exit")
 
+    return parser
+
+def validate_youtube_url(url: str) -> tuple[bool, str]:
+    parsed_url = urlparse(url)
+    hostname = parsed_url.hostname.lower() if parsed_url.hostname else ""
+    valid_hosts = ("www.youtube.com", "youtube.com", "youtu.be", "m.youtube.com")
+    
+    if hostname not in valid_hosts:
+        return False, f"Invalid YouTube URL: {url}\nPlease provide a valid YouTube link."
+
+    # Extract and validate video ID
+    if hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        params = parse_qs(parsed_url.query)
+        video_id = params.get("v", [None])[0]
+    else:  # youtu.be
+        video_id = parsed_url.path.lstrip("/")
+
+    if not video_id or not re.match(r"^[A-Za-z0-9_-]{11}$", video_id):
+        return False, f"Invalid YouTube video ID in URL: {url}\nPlease ensure it matches the format 'https://www.youtube.com/watch?v=VIDEO_ID'."
+
+    return True, video_id
+
+def get_transcript_path(args) -> str:
+    if args.extract:
+        return os.path.join("transcripts", args.extract) if os.path.dirname(args.extract) == "" else args.extract
+    elif args.transcript_file:
+        return os.path.join("transcripts", args.transcript_file)
+    return "transcripts/transcript.txt"
+
+def process_youtube_url(url: str, default_language: str, max_retries: int = 3, delay: float = 2.0) -> tuple[str, list, list, str]:
+    console = Console()
+    
+    def fetch_with_retry(url: str) -> str:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': f'{default_language},en-US;q=0.9,en;q=0.8'
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    content = response.text
+                    if 'ytInitialPlayerResponse' in content:
+                        # Add a fixed delay after successful page load
+                        time.sleep(3)  # Wait 3 seconds for everything to load
+                        return content
+                    else:
+                        console.print("[yellow]Page loaded but missing YouTube player data, retrying...[/yellow]")
+                else:
+                    console.print(f"[yellow]Received status code {response.status_code}, retrying...[/yellow]")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise Exception(f"Failed to fetch YouTube page after {max_retries} attempts")
+                
+            except requests.exceptions.RequestException as e:
+                console.print(f"[yellow]Request failed: {e}, retrying...[/yellow]")
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+                raise
+    
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
+        task = progress.add_task("Downloading video page...", total=None)
+        try:
+            # Fetch page with retry mechanism
+            html = fetch_with_retry(url)
+            
+            # Debug check for key content
+            if '"captionTracks"' not in html:
+                console.print("[yellow]Warning: Caption tracks data not found in page HTML[/yellow]")
+            
+            progress.update(task, description="Extracting content...", refresh=True)
+            
+            # Sequential content extraction with validation
+            video_info = get_video_info(html)
+            if not video_info:
+                console.print("[yellow]Warning: Could not extract complete video information, but continuing...[/yellow]")
+            
+            # Add a small delay before fetching transcript
+            time.sleep(1)
+            
+            progress.update(task, description="Fetching transcript...", refresh=True)
+            transcript_text = get_youtube_transcript(html, default_language, max_retries=max_retries, delay=delay)
+            if not transcript_text:
+                raise Exception("Failed to retrieve transcript from YouTube")
+            
+            progress.update(task, description="Checking for chapters...", refresh=True)
+            chapters = get_youtube_chapters(html)
+            
+            full_transcript = " ".join([entry["text"] for entry in transcript_text])
+            if not full_transcript.strip():
+                raise Exception("Empty transcript received")
+                
+            progress.update(task, description="Content extraction complete.", refresh=True)
+            return full_transcript, transcript_text, chapters, html
+            
+        except Exception as e:
+            console.print(f"[red]Error processing YouTube URL:[/red] {e}")
+            # Print additional debug info
+            if 'html' in locals():
+                console.print("[yellow]Debug: Page content indicators:[/yellow]")
+                console.print(f"- Contains player data: {'ytInitialPlayerResponse' in html}")
+                console.print(f"- Contains caption tracks: {'captionTracks' in html}")
+            exit(1)
+
+def save_markdown_output(summary: str, transcript_text: list, chapters: list, video_id: str, md_path: str):
+    try:
+        with open(md_path, "w", encoding="utf-8") as md_file:
+            md_file.write("# Summary\n\n")
+            md_file.write(summary + "\n\n")
+            
+            # Add chapters section if available
+            if chapters:
+                md_file.write("## Chapters\n\n")
+                for chapter in chapters:
+                    time_seconds = int(chapter["time"])
+                    link_url = f"https://www.youtube.com/watch?v={video_id}&t={time_seconds}s"
+                    md_file.write(f"- [`{chapter['timestamp']}`]({link_url}) {chapter['title']}\n")
+                md_file.write("\n")
+            else:
+                md_file.write("## Chapters\n\n")
+                md_file.write("No chapters available.\n")
+                md_file.write("\n")
+            
+            if transcript_text:
+                md_file.write("## Transcript\n\n")
+                for entry in transcript_text:
+                    ts = format_duration(float(entry.get("start", 0)))
+                    text = entry.get("text", "")
+                    start_seconds = int(float(entry.get("start", 0)))
+                    link_url = f"https://www.youtube.com/watch?v={video_id}&t={start_seconds}s"
+                    md_file.write(f"- [`{ts}`]({link_url}) {text}\n")
+        print(f"Markdown output saved to '{md_path}'.")
+    except IOError as e:
+        print(f"Error writing Markdown file: {e}")
+
+def main():
+    # Load configuration
+    config = load_config("config.json")
+    default_model = config.get("default_model", "llama3.2:latest")
+    default_prompt = config.get("default_prompt", "Please provide a concise summary of the following transcript:\n\n{transcript}\n\nSummary: Include some bullet points or key takeaways.")
+    default_temperature = config.get("default_temperature", 0.25)
+    default_language = config.get("default_language", "en")
+
+    # Validate temperature and ensure transcripts directory exists
+    console = Console()
+    if not isinstance(default_temperature, (int, float)) or not (0.0 <= default_temperature <= 1.0):
+        console.print(f"[yellow]Invalid default_temperature '{default_temperature}' in config; using fallback 0.25[/yellow]")
+        default_temperature = 0.25
+
+    os.makedirs("transcripts", exist_ok=True)
+
+    # Parse and validate arguments
+    parser = setup_argument_parser(default_model, default_temperature)
     args = parser.parse_args()
 
-    # Validate mutually exclusive options
     if args.url and args.extract:
         parser.error("Cannot use --url and --extract together.")
-    # Validate temperature bounds
     if not (0.0 <= args.temperature <= 1.0):
         parser.error("Temperature must be between 0.0 and 1.0.")
 
-    # If standalone options are used, process and exit.
+    # Handle standalone options
     if args.list:
         list_models(default_model)
-        exit(0)
+        return
     if args.status:
         check_status()
-        exit(0)
-    
-    # Determine transcript file path.
-    # If transcript_file does not include a directory, assume it's in the "transcripts" folder.
-    if args.extract:
-        if os.path.dirname(args.extract) == "":
-            transcript_path = os.path.join("transcripts", args.extract)
-        else:
-            transcript_path = args.extract
-    elif args.transcript_file:
-        transcript_path = os.path.join("transcripts", args.transcript_file)
-    else:
-        transcript_path = "transcripts/transcript.txt"
+        return
 
-    # If a YouTube URL is provided, extract the transcript from YouTube; otherwise, use the file
+    # Process transcript
+    transcript_path = get_transcript_path(args)
+    transcript_text = None
+    video_id = None
+
     if args.url:
-        # Pre-validate YouTube URL
-        parsed_url = urlparse(args.url)
-        hostname = parsed_url.hostname.lower() if parsed_url.hostname else ""
-        valid_hosts = ("www.youtube.com", "youtube.com", "youtu.be", "m.youtube.com")
-        if hostname not in valid_hosts:
-            print(f"Invalid YouTube URL: {args.url}\nPlease provide a valid YouTube link.")
-            exit(1)
-        # Validate YouTube video ID
-        if hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
-            params = parse_qs(parsed_url.query)
-            video_id = params.get("v", [None])[0]
-        else:  # youtu.be
-            video_id = parsed_url.path.lstrip("/")
-        if not video_id or not re.match(r"^[A-Za-z0-9_-]{11}$", video_id):
-            print(
-                f"Invalid YouTube video ID in URL: {args.url}\n"
-                "Please ensure it matches the format 'https://www.youtube.com/watch?v=VIDEO_ID'."
-            )
-            exit(1)
-        with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
-            task = progress.add_task("Downloading video page...", total=None)
-            try:
-                response = requests.get(args.url, timeout=10)
-            except requests.exceptions.RequestException as e:
-                console = Console()
-                console.print(f"[red]Network error fetching video page:[/red] {e}")
-                exit(1)
-            if response.status_code != 200:
-                print(f"Failed to fetch YouTube video page: {response.status_code}")
-                exit(1)
-            html = response.text
-            progress.update(task, description="Extracting transcript...", refresh=True)
-            try:
-                video_info = get_video_info(html)
-            except Exception as e:
-                console = Console()
-                console.print(f"[red]Error extracting video metadata:[/red] {e}")
-                exit(1)
-            transcript_text = get_youtube_transcript(html, default_language)
-            if not transcript_text:
-                print("Failed to retrieve transcript from YouTube.")
-                exit(1)
-            full_transcript = " ".join([entry["text"] for entry in transcript_text])
-            progress.update(task, description="Transcript extraction complete.", refresh=True)
+        is_valid, result = validate_youtube_url(args.url)
+        if not is_valid:
+            print(result)
+            return
+        video_id = result
+        full_transcript, transcript_text, chapters, _ = process_youtube_url(
+            args.url, 
+            default_language,
+            max_retries=5,  
+            delay=3.0       # Increased delay between retries
+        )
     else:
+        chapters = None
         try:
             with open(transcript_path, "r", encoding="utf-8") as file:
                 full_transcript = file.read()
         except IOError as e:
             print(f"File error: {e}")
-            exit(1)
+            return
 
     if args.extract:
         try:
             with open(transcript_path, "w", encoding="utf-8") as file:
                 file.write(full_transcript)
+            print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
         except IOError as e:
             print(f"File error: {e}")
-            exit(1)
-        print(f"Transcript extracted from YouTube and saved to '{transcript_path}'.")
-        # exit(0)
-    
+            return
+
+    # Generate summary
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
         task = progress.add_task(f"Summarizing with model {args.model}...", total=None)
         try:
-            summary, metrics = summarize_transcript_with_metrics(full_transcript, model=args.model, prompt_template=default_prompt, temperature=args.temperature)
+            summary, metrics = summarize_transcript_with_metrics(
+                full_transcript, 
+                model=args.model, 
+                prompt_template=default_prompt, 
+                temperature=args.temperature
+            )
+            if not summary.strip():
+                console.print("[yellow]Warning: Model returned an empty summary.[/yellow]")
+            progress.update(task, description="Summarization complete.", refresh=True)
         except Exception as e:
-            console = Console()
             console.print(f"[red]Summarization failed:[/red] {e}")
-            exit(1)
-        if not summary.strip():
-            console.print("[yellow]Warning: Model returned an empty summary.[/yellow]")
-        progress.update(task, description="Summarization complete.", refresh=True)
+            return
 
+    # Output results
     print("\n")
     print(summary)
     
@@ -346,33 +569,10 @@ def main():
         for key, value in metrics.items():
             print(f"{key}: {value}")
 
-    # Markdown output
     if args.markdown:
-        # Determine output path
-        if args.url:
-            md_filename = f"{video_id}.md"
-        else:
-            md_filename = "summary.md"
+        md_filename = f"{video_id}.md" if args.url else "summary.md"
         md_path = os.path.join("transcripts", md_filename)
-        try:
-            with open(md_path, "w", encoding="utf-8") as md_file:
-                # Write summary
-                md_file.write("# Summary\n\n")
-                md_file.write(summary + "\n\n")
-                # Write transcript if available
-                if 'transcript_text' in locals() and transcript_text:
-                    md_file.write("## Transcript\n\n")
-                    for entry in transcript_text:
-                        # Format timestamp to HH:MM:SS
-                        ts = format_duration(float(entry.get("start", 0)))
-                        text = entry.get("text", "")
-                        # Embed timestamp as clickable YouTube link
-                        start_seconds = int(float(entry.get("start", 0)))
-                        link_url = f"https://www.youtube.com/watch?v={video_id}&t={start_seconds}s"
-                        md_file.write(f"- [`{ts}`]({link_url}) {text}\n")
-            print(f"Markdown output saved to '{md_path}'.")
-        except IOError as e:
-            print(f"Error writing Markdown file: {e}")
+        save_markdown_output(summary, transcript_text, chapters, video_id, md_path)
 
 if __name__ == "__main__":
     main()
